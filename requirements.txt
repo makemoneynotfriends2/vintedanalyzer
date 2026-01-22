@@ -2,4 +2,5 @@ flask
 requests
 pandas
 beautifulsoup4
-apscheduler
+urllib3
+python-dateutil
