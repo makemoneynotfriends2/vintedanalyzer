@@ -1,75 +1,48 @@
+from flask import Flask, jsonify
 import requests
-import time
 import random
 
-class VintedProAnalyzer:
-    def __init__(self):
-        self.session = requests.Session()
-        self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36',
-            'Accept-Language': 'de-DE,de;q=0.9'
-        })
-        self.cookies = None
+app = Flask(__name__)
 
-    def get_initial_cookies(self):
-        try:
-            # Vinted braucht einen initialen Aufruf für die Session-Cookies
-            r = self.session.get("https://www.vinted.de", timeout=10)
-            self.cookies = r.cookies
-            print("[✓] Session aktiv - Bereit für Trend-Suche.")
-        except:
-            print("[!] Verbindung fehlgeschlagen. Prüfe dein Internet.")
+# Deine Target-Liste (genau wie du sie wolltest)
+TARGETS = [
+    {"brand": "Ralph Lauren", "sub": "Vintage"},
+    {"brand": "Lacoste", "sub": "Tracksuit"},
+    {"brand": "True Religion", "sub": "Jeans"},
+    {"brand": "Football", "sub": "Tracksuit"},
+    {"brand": "Gucci", "sub": "Vintage"},
+    {"brand": "Armani", "sub": "Vintage"},
+    {"brand": "Dolce & Gabbana", "sub": "Vintage"}
+]
 
-    def analyze_trends(self, brand, category_keyword):
-        if not self.cookies: self.get_initial_cookies()
-        
-        # Kombinierte Suche für bessere Treffer (z.B. "Ralph Lauren Knitwear")
-        query = f"{brand} {category_keyword}"
-        url = "https://www.vinted.de/api/v2/catalog/items"
-        
-        params = {
-            "search_text": query,
-            "order": "newest_first",
-            "per_page": 10,
-            "price_to": 80  # Filter für Reselling-Margen (kannst du anpassen)
-        }
-
-        try:
-            response = self.session.get(url, params=params, cookies=self.cookies)
-            if response.status_code == 200:
-                data = response.json()
-                items = data.get('items', [])
-                print(f"\n--- TREND-CHECK: {query.upper()} ---")
-                for item in items:
-                    title = item.get('title')
-                    price = item.get('price', {}).get('amount')
-                    # Trend-Indikator: Artikel mit vielen Favoriten bei kurzem Listing
-                    favs = item.get('favourite_count', 0)
-                    print(f"🔥 [{favs} Favs] {title} - {price}€")
-                    print(f"🔗 https://www.vinted.de{item.get('url')}")
-            elif response.status_code == 429:
-                print("⚠️ Rate Limit erreicht. Pause für 2 Minuten...")
-                time.sleep(120)
-        except Exception as e:
-            print(f"Fehler: {e}")
-
-if __name__ == "__main__":
-    bot = VintedProAnalyzer()
+def get_vinted_data(query):
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/110.0.0.0'}
+    session = requests.Session()
+    session.get("https://www.vinted.de", headers=headers) # Cookies holen
     
-    # Deine spezifische Target-Liste
-    targets = [
-        {"brand": "Ralph Lauren", "trends": ["Knitwear", "Rugby Shirt", "Polo Sport"]},
-        {"brand": "Lacoste", "trends": ["Vintage Trainingsjacke", "Tracksuit", "Wolle"]},
-        {"brand": "True Religion", "trends": ["Ricky Super T", "Bootcut", "Jeans"]},
-        {"brand": "Gucci", "trends": ["Vintage Belt", "Monogram", "Accessoires"]},
-        {"brand": "Football", "trends": ["Tracksuit", "Jersey", "Training Set"]},
-        {"brand": "Dolce & Gabbana", "trends": ["Vintage Mesh", "D&G Belt", "Jacket"]}
-    ]
+    url = f"https://www.vinted.de/api/v2/catalog/items?search_text={query}&order=newest_first&per_page=10"
+    try:
+        r = session.get(url, headers=headers)
+        return r.json().get('items', [])
+    except:
+        return []
 
-    while True:
-        for target in targets:
-            brand = target["brand"]
-            for sub_trend in target["trends"]:
-                bot.analyze_trends(brand, sub_trend)
-                # Zufällige Pause zwischen 10-20 Sek, um Bot-Schutz zu umgehen
-                time.sleep(random.randint(10, 20))
+@app.route('/')
+def home():
+    # Sucht bei jedem Refresh der Seite nach einem zufälligen Trend-Thema deiner Liste
+    target = random.choice(TARGETS)
+    query = f"{target['brand']} {target['sub']}"
+    items = get_vinted_data(query)
+    
+    # Erstellt eine einfache Liste für den Browser
+    html = f"<h1>Trend-Analyse für: {query}</h1><ul>"
+    for item in items:
+        price = item.get('price', {}).get('amount')
+        url = f"https://www.vinted.de{item.get('url')}"
+        html += f"<li><b>{item.get('title')}</b> - {price}€ <br> <a href='{url}' target='_blank'>Link zum Deal</a></li><br>"
+    html += "</ul>"
+    return html
+
+# Wichtig für Vercel/Deployment
+if __name__ == "__main__":
+    app.run()
