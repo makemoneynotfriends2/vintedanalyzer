@@ -3,301 +3,368 @@ import time
 import random
 import logging
 import urllib3
+import json
+import re
+import io
 import pandas as pd
+import numpy as np
 from datetime import datetime, timedelta
-from flask import Flask, render_template_string, request, jsonify
+from flask import Flask, render_template_string, request, jsonify, make_response
 from collections import deque
-from typing import Dict, List, Optional, Any
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Dict, List, Optional, Any, Union, Tuple
+from bs4 import BeautifulSoup
 
-# Initialisierung der Unterdrückung von SSL-Warnungen (wie in deinem Bot)
+# ==============================================================================
+# PHASE 1: SYSTEM ARCHITECTURE & GLOBAL SECURITY LAYER
+# ==============================================================================
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
 app = Flask(__name__)
 
-# ==============================================================================
-# GLOBAL CONFIGURATION & MARKET INTELLIGENCE CONSTANTS
-# ==============================================================================
-CONFIG = {
-    "VERSION": "8.0-ENTERPRISE",
-    "AUTHOR": "Core Resale Systems",
-    "MARKETS": {
-        "germany": {"domain": "vinted.de", "currency": "EUR", "locale": "de-DE"},
-        "france": {"domain": "vinted.fr", "currency": "EUR", "locale": "fr-FR"},
-        "italy": {"domain": "vinted.it", "currency": "EUR", "locale": "it-IT"},
-        "spain": {"domain": "vinted.es", "currency": "EUR", "locale": "es-ES"}
-    },
-    "HYPE_BRANDS": [
-        "Ralph Lauren", "Lacoste", "True Religion", "Gucci", 
-        "Armani", "Dolce & Gabbana", "Nike", "Adidas", "Stussy"
-    ],
-    "ANALYSIS": {
-        "STEAL_THRESHOLD": 0.35,  # 35% unter Marktwert = Steal
-        "DEMAND_WEIGHT": 1.5,     # Gewichtung von Favoriten
-        "MAX_HISTORY": 5000       # Historische Datenpunkte für Preis-Graphen
-    }
-}
-
-# ==============================================================================
-# LOGGING & AUDIT TRAIL SYSTEM
-# ==============================================================================
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - [VRI-CORE] - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - [SOVEREIGN-CORE-V11] - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
-# ==============================================================================
-# CORE ENGINE: DATA PERSISTENCE & ANALYTICS
-# ==============================================================================
-class MarketIntelligenceUnit:
-    """Verantwortlich für die Berechnung von Trends und Preis-Benchmarks"""
-    def __init__(self):
-        self.item_history = deque(maxlen=CONFIG["ANALYSIS"]["MAX_HISTORY"])
-        self.brand_benchmarks = {}
-
-    def ingest_data(self, items: List[Dict]):
-        for item in items:
-            self.item_history.append({
-                "id": item.get('id'),
-                "price": float(item.get('price_numeric', 0)) if item.get('price_numeric') else float(item.get('price', {}).get('amount', 0)),
-                "brand": item.get('brand_title', 'Unknown').lower(),
-                "favs": item.get('favourite_count', 0),
-                "timestamp": datetime.now()
-            })
-        self._calculate_benchmarks()
-
-    def _calculate_benchmarks(self):
-        if not self.item_history: return
-        df = pd.DataFrame(list(self.item_history))
-        if df.empty: return
-        
-        # Aggregation der Durchschnittspreise pro Marke
-        stats = df.groupby('brand')['price'].agg(['mean', 'std', 'count']).to_dict('index')
-        self.brand_benchmarks = stats
-
-    def evaluate_deal(self, price: float, brand: str, favs: int) -> Dict:
-        brand = brand.lower()
-        benchmark = self.brand_benchmarks.get(brand, {"mean": 50.0}) # Default Fallback
-        
-        avg_price = benchmark['mean']
-        profit_potential = avg_price - price
-        is_steal = price < (avg_price * (1 - CONFIG["ANALYSIS"]["STEAL_THRESHOLD"]))
-        
-        # Hype Score Berechnung
-        hype_score = (favs * CONFIG["ANALYSIS"]["DEMAND_WEIGHT"]) + (profit_potential if profit_potential > 0 else 0)
-        
-        return {
-            "avg_market_price": round(avg_price, 2),
-            "profit_potential": round(profit_potential, 2),
-            "is_steal": is_steal,
-            "hype_score": round(hype_score, 1)
-        }
-
-# ==============================================================================
-# PROXY & SESSION MANAGEMENT (ADAPTED FROM YOUR WORKING BOT)
-# ==============================================================================
-class VintedSessionManager:
-    """Garantiert stabile Verbindungen durch Cookie-Handling und Header-Mimicry"""
-    def __init__(self):
-        self.session = requests.Session()
-        self.cookies = {}
-        self.last_init = None
-
-    def get_headers(self, country_code: str = "germany"):
-        config = CONFIG["MARKETS"].get(country_code, CONFIG["MARKETS"]["germany"])
-        return {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'application/json',
-            'Accept-Language': config['locale'] + ',de;q=0.9',
-            'Referer': f'https://www.{config["domain"]}/'
-        }
-
-    def ensure_session(self, country_code: str = "germany"):
-        now = datetime.now()
-        if self.last_init and (now - self.last_init).seconds < 600:
-            return
-            
-        config = CONFIG["MARKETS"].get(country_code, CONFIG["MARKETS"]["germany"])
-        domain = config['domain']
-        
-        try:
-            logger.info(f"🔄 Initialisiere Session für {domain}...")
-            # Handshake wie in deinem Bot
-            resp = self.session.get(f"https://www.{domain}", headers={'User-Agent': 'Mozilla/5.0'}, timeout=10, verify=False)
-            if resp.status_code == 200:
-                self.cookies = self.session.cookies.get_dict()
-                self.last_init = now
-                logger.info(f"✅ Session aktiv ({len(self.cookies)} Cookies)")
-        except Exception as e:
-            logger.error(f"❌ Session Error: {e}")
-
-# ==============================================================================
-# THE ENGINE: MASTER SCRAPER & ANALYZER
-# ==============================================================================
-class ResaleMasterEngine:
-    def __init__(self):
-        self.session_manager = VintedSessionManager()
-        self.intelligence = MarketIntelligenceUnit()
-
-    def deep_scan(self, search_term: str, country: str = "germany"):
-        self.session_manager.ensure_session(country)
-        config = CONFIG["MARKETS"][country]
-        
-        params = {
-            'search_text': search_term,
-            'order': 'newest_first',
-            'per_page': '50',
-            'currency': config['currency']
-        }
-        
-        try:
-            url = f"https://www.{config['domain']}/api/v2/catalog/items"
-            response = self.session_manager.session.get(
-                url, 
-                params=params, 
-                headers=self.session_manager.get_headers(country),
-                timeout=12,
-                verify=False
-            )
-            
-            if response.status_code == 200:
-                raw_items = response.json().get('items', [])
-                self.intelligence.ingest_data(raw_items)
-                
-                # Veredelung der Daten
-                enriched_results = []
-                for item in raw_items:
-                    brand = item.get('brand_title', 'Unknown')
-                    price = float(item.get('price_numeric')) if item.get('price_numeric') else float(item.get('price', {}).get('amount', 0))
-                    favs = item.get('favourite_count', 0)
-                    
-                    analysis = self.intelligence.evaluate_deal(price, brand, favs)
-                    
-                    enriched_results.append({
-                        "id": item.get('id'),
-                        "title": item.get('title'),
-                        "price": price,
-                        "currency": config['currency'],
-                        "brand": brand,
-                        "favs": favs,
-                        "url": f"https://www.{config['domain']}{item.get('url')}",
-                        "photo": item.get('photos', [{}])[0].get('url', ''),
-                        "analysis": analysis
-                    })
-                
-                # Sortiere nach Hype Score
-                return sorted(enriched_results, key=lambda x: x['analysis']['hype_score'], reverse=True)
-            return []
-        except Exception as e:
-            logger.error(f"Scan Error: {e}")
-            return []
-
-# Singleton Instance
-engine = ResaleMasterEngine()
-
-# ==============================================================================
-# UI FRAMEWORK: HIGH-END DASHBOARD (TAILWIND/JS)
-# ==============================================================================
-@app.route('/')
-def index():
-    query = request.args.get('q', 'Ralph Lauren Vintage')
-    results = engine.deep_scan(query)
+class GlobalConfig:
+    """Zentrale Steuerungseinheit für alle Markt-Parameter"""
+    VERSION = "11.0.4-ENTERPRISE"
+    CORE_ID = "RESALE-SOVEREIGN-8FIGURE-CORE"
     
+    MARKETS = {
+        "germany": {"domain": "vinted.de", "currency": "EUR", "locale": "de-DE", "tz": "Europe/Berlin"},
+        "france": {"domain": "vinted.fr", "currency": "EUR", "locale": "fr-FR", "tz": "Europe/Paris"},
+        "italy": {"domain": "vinted.it", "currency": "EUR", "locale": "it-IT", "tz": "Europe/Rome"},
+        "spain": {"domain": "vinted.es", "currency": "EUR", "locale": "es-ES", "tz": "Europe/Madrid"},
+        "uk": {"domain": "vinted.co.uk", "currency": "GBP", "locale": "en-GB", "tz": "Europe/London"}
+    }
+    
+    # Erweiterte Marken-Heuristik für Resale-Value
+    BRANDS = {
+        "ralph lauren": {"weight": 1.4, "tags": ["vintage", "90s", "polo sport", "bear"]},
+        "lacoste": {"weight": 1.2, "tags": ["tracksuit", "vintage", "tn"]},
+        "true religion": {"weight": 1.8, "tags": ["ricky", "super t", "billy", "joey"]},
+        "nike": {"weight": 1.5, "tags": ["vintage", "football", "center swoosh"]},
+        "stussy": {"weight": 1.7, "tags": ["8ball", "dice", "world tour"]},
+        "gucci": {"weight": 2.2, "tags": ["vintage", "monogram", "belt"]}
+    }
+
+    SCAN_LIMITS = {"max_items": 100, "request_timeout": 15, "retry_attempts": 3}
+    
+    # Sentiment-Vektoren für die Zustands-Analyse
+    SENTIMENT_VECTORS = {
+        "POSITIVE": ["neu", "etikett", "ungetragen", "ovp", "top", "deadstock", "mint", "brandneu"],
+        "NEGATIVE": ["loch", "fleck", "flecken", "riss", "kaputt", "defekt", "beschädigt", "gebraucht"],
+        "VINTAGE_BOOST": ["vintage", "90s", "y2k", "selten", "rare", "archive"]
+    }
+
+# ==============================================================================
+# PHASE 2: DATA PERSISTENCE & ANALYTICS ENGINE (HEAVY LOGIC)
+# ==============================================================================
+class SovereignDataVault:
+    """Verwaltet Markt-Snapshots und historische Preis-Daten für Arbitrage-Berechnungen"""
+    def __init__(self):
+        self._market_buffer = deque(maxlen=25000)
+        self._blacklist = set()
+        self._brand_intelligence = {}
+        self._last_update = None
+
+    def ingest_snapshot(self, items: List[Dict], market: str):
+        """Integriert neue Scans in den Datenspeicher und berechnet Benchmarks"""
+        timestamp = datetime.now()
+        processed_count = 0
+        
+        for item in items:
+            item_id = item.get('id')
+            if item_id in self._blacklist: continue
+            
+            try:
+                raw_price = item.get('price_numeric') or item.get('price', {}).get('amount')
+                price = float(raw_price) if raw_price else 0.0
+                
+                entry = {
+                    "id": item_id,
+                    "market": market,
+                    "brand": item.get('brand_title', 'Unknown').lower(),
+                    "price": price,
+                    "favs": int(item.get('favourite_count', 0)),
+                    "ts": timestamp,
+                    "title": item.get('title', '').lower()
+                }
+                self._market_buffer.append(entry)
+                processed_count += 1
+            except Exception as e:
+                continue
+        
+        self._last_update = timestamp
+        self._update_intelligence()
+        logger.info(f"Ingested {processed_count} items into Vault for {market}")
+
+    def _update_intelligence(self):
+        """Berechnet Preis-Benchmarks mittels Pandas für maximale Performance"""
+        if len(self._market_buffer) < 10: return
+        
+        df = pd.DataFrame(list(self._market_buffer))
+        # Gruppierung nach Marke für Durchschnitts-Preise
+        brand_stats = df.groupby('brand')['price'].agg(['mean', 'median', 'std', 'count']).to_dict('index')
+        
+        for brand, stats in brand_stats.items():
+            self._brand_intelligence[brand] = {
+                "avg": stats['mean'],
+                "med": stats['median'],
+                "volatility": stats['std'] if not pd.isna(stats['std']) else 0,
+                "volume": stats['count']
+            }
+
+    def get_benchmark(self, brand: str) -> Dict:
+        brand = brand.lower()
+        return self._brand_intelligence.get(brand, {"avg": 45.0, "med": 40.0, "volatility": 15.0})
+
+# ==============================================================================
+# PHASE 3: MASTER CRAWLER & SESSION MANAGEMENT
+# ==============================================================================
+class ResaleSessionManager:
+    """Verwaltet HTTP-Sessions, Cookies und simuliert menschliches Verhalten"""
+    def __init__(self):
+        self.session_pool = {}
+        self.user_agents = [
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36"
+        ]
+
+    def _get_headers(self, locale: str = "de-DE"):
+        return {
+            'User-Agent': random.choice(self.user_agents),
+            'Accept': 'application/json, text/plain, */*',
+            'Accept-Language': f'{locale},en;q=0.9',
+            'Connection': 'keep-alive',
+            'DNT': '1'
+        }
+
+    def initialize_market_session(self, market_key: str):
+        config = GlobalConfig.MARKETS.get(market_key)
+        if not config: return None
+        
+        session = requests.Session()
+        try:
+            # Initialer Handshake zur Cookie-Gewinnung
+            logger.info(f"Handshaking with {config['domain']}...")
+            session.get(f"https://www.{config['domain']}", headers=self._get_headers(config['locale']), timeout=10, verify=False)
+            self.session_pool[market_key] = session
+            return session
+        except Exception as e:
+            logger.error(f"Failed to initialize {market_key}: {e}")
+            return None
+
+    def get_session(self, market_key: str):
+        return self.session_pool.get(market_key) or self.initialize_market_session(market_key)
+
+# ==============================================================================
+# PHASE 4: ANALYTICS CORE & SENTIMENT PROCESSING
+# ==============================================================================
+class SovereignAnalyzer:
+    """Das Herzstück: Analysiert Artikel auf Profitabilität und Trend-Potential"""
+    @staticmethod
+    def run_deep_analysis(item: Dict, benchmark: Dict) -> Dict:
+        title = item.get('title', '').lower()
+        raw_price = item.get('price_numeric') or item.get('price', {}).get('amount')
+        price = float(raw_price) if raw_price else 0.0
+        favs = int(item.get('favourite_count', 0))
+        
+        # 1. Arbitrage Heuristik
+        avg_market = benchmark.get('avg', 50.0)
+        price_delta = avg_market - price
+        is_steal = price < (avg_market * 0.65) # 35% Steal-Schwelle
+        
+        # 2. Sentiment Analyse
+        sentiment_score = 50
+        for word in GlobalConfig.SENTIMENT_VECTORS["POSITIVE"]:
+            if word in title: sentiment_score += 12
+        for word in GlobalConfig.SENTIMENT_VECTORS["NEGATIVE"]:
+            if word in title: sentiment_score -= 25
+        for word in GlobalConfig.SENTIMENT_VECTORS["VINTAGE_BOOST"]:
+            if word in title: sentiment_score += 15
+            
+        # 3. Liquiditäts-Score (Hype)
+        # Formel: (Favoriten * gewichteter Faktor) + (Marge * Profit-Faktor)
+        hype_score = (favs * 2.5) + (max(0, price_delta) * 0.8) + (sentiment_score / 2)
+        
+        # 4. URL RESOLVER (FIX FÜR DEINEN FEHLER)
+        raw_url = item.get('url', '')
+        # Extrahiere nur den Pfad, falls eine volle URL vorhanden ist
+        path = re.sub(r'https?://[^/]+', '', raw_url)
+        
+        return {
+            "clean_url": path, # Nur der Pfad
+            "mkt_avg": round(avg_market, 2),
+            "est_profit": round(price_delta, 2),
+            "is_steal": is_steal,
+            "hype_score": round(hype_score, 1),
+            "sentiment": sentiment_score
+        }
+
+# ==============================================================================
+# PHASE 5: THE SOVEREIGN ORCHESTRATOR (CONTROLLER)
+# ==============================================================================
+vault = SovereignDataVault()
+session_manager = ResaleSessionManager()
+analyzer = SovereignAnalyzer()
+
+def scan_worker(query: str, market_key: str) -> List[Dict]:
+    """Einzelner Worker für parallele Markt-Scans"""
+    config = GlobalConfig.MARKETS.get(market_key)
+    session = session_manager.get_session(market_key)
+    if not session: return []
+    
+    url = f"https://www.{config['domain']}/api/v2/catalog/items"
+    params = {'search_text': query, 'order': 'newest_first', 'per_page': '50'}
+    
+    try:
+        resp = session.get(url, params=params, headers=session_manager._get_headers(config['locale']), timeout=12, verify=False)
+        if resp.status_code == 200:
+            items = resp.json().get('items', [])
+            vault.ingest_snapshot(items, market_key)
+            return items
+        return []
+    except Exception as e:
+        logger.error(f"Worker Error [{market_key}]: {e}")
+        return []
+
+@app.route('/')
+def main_dashboard():
+    query = request.args.get('q', 'Ralph Lauren Vintage')
+    
+    # Parallele Markt-Execution (DE, FR, IT)
+    target_markets = ["germany", "france", "italy"]
+    all_raw_items = []
+    
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        futures = {executor.submit(scan_worker, query, m): m for m in target_markets}
+        for future in as_completed(futures):
+            market = futures[future]
+            items = future.result()
+            for i in items:
+                i['market_context'] = market
+                all_raw_items.append(i)
+
+    # Verarbeitung und Veredelung der Daten
+    processed_items = []
+    for raw in all_raw_items:
+        m_key = raw.get('market_context')
+        m_config = GlobalConfig.MARKETS[m_key]
+        
+        brand = raw.get('brand_title', 'Unknown')
+        benchmark = vault.get_benchmark(brand)
+        analysis = analyzer.run_deep_analysis(raw, benchmark)
+        
+        # FINAL URL COMPOSITION (FIX)
+        final_url = f"https://www.{m_config['domain']}{analysis['clean_url']}"
+        
+        processed_items.append({
+            "id": raw.get('id'),
+            "title": raw.get('title'),
+            "brand": brand,
+            "price": raw.get('price_numeric') or raw.get('price', {}).get('amount'),
+            "favs": raw.get('favourite_count', 0),
+            "url": final_url,
+            "photo": raw.get('photos', [{}])[0].get('url', '') if raw.get('photos') else '',
+            "market_name": m_key.upper(),
+            "analysis": analysis
+        })
+
+    # Ranking: Die besten Deals nach Hype-Score zuerst
+    final_items = sorted(processed_items, key=lambda x: x['analysis']['hype_score'], reverse=True)
+
+    # ==============================================================================
+    # PHASE 6: ENTERPRISE UI (TAILWIND / JAVASCRIPT)
+    # ==============================================================================
     return render_template_string("""
     <!DOCTYPE html>
-    <html lang="de" class="dark">
+    <html lang="de">
     <head>
         <meta charset="UTF-8">
-        <title>Vinted 8-Figure Resale Pro</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Sovereign.Core v11 | Enterprise Resale</title>
         <script src="https://cdn.tailwindcss.com"></script>
         <style>
-            @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;700;900&display=swap');
-            body { font-family: 'Outfit', sans-serif; background: #0a0a0c; color: #f4f4f5; }
-            .steal-card { border: 2px solid #22c55e; box-shadow: 0 0 25px rgba(34, 197, 94, 0.15); }
-            .glass { background: rgba(18, 18, 22, 0.7); backdrop-filter: blur(12px); border: 1px solid rgba(255,255,255,0.05); }
-            .shimmer { background: linear-gradient(90deg, #18181b 25%, #27272a 50%, #18181b 75%); background-size: 200% 100%; animation: shimmer 2s infinite; }
-            @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+            @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;700&display=swap');
+            body { font-family: 'Space Grotesk', sans-serif; background-color: #030303; color: #f2f2f2; }
+            .glass { background: rgba(10, 10, 10, 0.85); backdrop-filter: blur(25px); border: 1px solid rgba(255,255,255,0.06); }
+            .steal-glow { border: 2px solid #00ff41; box-shadow: 0 0 35px rgba(0, 255, 65, 0.25); }
+            .hype-badge { background: linear-gradient(90deg, #ff0055, #ff00aa); }
+            .market-badge { background: #1a1a1a; color: #888; font-size: 10px; padding: 2px 8px; border-radius: 4px; }
         </style>
     </head>
-    <body class="p-4 md:p-10">
-        <div class="max-w-7xl mx-auto">
-            <header class="flex flex-col md:flex-row justify-between items-center mb-12 gap-6">
+    <body class="p-4 md:p-12">
+        <div class="max-w-[1700px] mx-auto">
+            <header class="flex flex-col md:flex-row justify-between items-end mb-16 gap-10">
                 <div>
-                    <h1 class="text-5xl font-black tracking-tighter text-white">RESALE<span class="text-green-500">CORE</span></h1>
-                    <p class="text-zinc-500 font-medium">Enterprise Market Analysis System v8.0</p>
+                    <h1 class="text-7xl font-black tracking-tighter italic">SOVEREIGN<span class="text-[#00ff41]">.11</span></h1>
+                    <p class="text-zinc-600 font-bold tracking-[0.4em] uppercase text-xs mt-3">Advanced Global Arbitrage Infrastructure</p>
                 </div>
-                <div class="flex gap-4">
-                    <div class="glass px-6 py-3 rounded-2xl text-center">
-                        <p class="text-zinc-500 text-[10px] uppercase font-bold tracking-widest">Markt Status</p>
-                        <p class="text-green-400 font-bold">SYNCHRONISIERT</p>
+                <div class="flex gap-6">
+                    <div class="glass px-8 py-5 rounded-[2rem] text-right border-l-4 border-l-[#00ff41]">
+                        <p class="text-zinc-500 text-[10px] font-black uppercase mb-1">Vault Capacity</p>
+                        <p class="text-white font-mono text-2xl tracking-widest">25.000+ ITEMS</p>
                     </div>
                 </div>
             </header>
 
-            <div class="glass p-3 rounded-3xl mb-12 flex gap-3">
-                <form action="/" method="get" class="flex w-full gap-3">
-                    <input type="text" name="q" value="{{ query }}" placeholder="Suche nach Marken, Kategorien oder spezifischen Trends..." 
-                        class="w-full bg-zinc-900/50 border-none p-5 rounded-2xl text-xl focus:ring-2 focus:ring-green-500 transition-all outline-none">
-                    <button type="submit" class="bg-green-500 hover:bg-green-400 text-black px-10 rounded-2xl font-black text-lg transition-all transform hover:scale-95">SCAN</button>
+            <div class="mb-20 glass p-3 rounded-[3rem]">
+                <form action="/" method="get" class="flex gap-4">
+                    <input type="text" name="q" value="{{ query }}" placeholder="Global Market Intelligence Search..." 
+                        class="w-full bg-zinc-900/40 border-none p-6 rounded-[2.5rem] text-2xl outline-none focus:ring-2 focus:ring-[#00ff41]/30 transition-all">
+                    <button type="submit" class="bg-[#00ff41] text-black px-16 rounded-[2.5rem] font-black text-xl hover:scale-95 transition-transform">SCAN</button>
                 </form>
             </div>
 
-            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
-                {% if not items %}
-                <div class="col-span-full p-20 text-center glass rounded-3xl">
-                    <h2 class="text-3xl font-bold text-zinc-700">KEINE DATEN EMPFANGEN</h2>
-                    <p class="text-zinc-500 mt-2">Prüfe die Vinted-Verbindung oder versuche einen anderen Suchbegriff.</p>
-                </div>
-                {% endif %}
-
+            <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-12">
                 {% for item in items %}
-                <div class="glass rounded-[2rem] overflow-hidden flex flex-col transition-all hover:-translate-y-2 {{ 'steal-card' if item.analysis.is_steal else '' }}">
-                    <div class="relative group">
-                        <img src="{{ item.photo }}" class="w-full h-72 object-cover group-hover:scale-110 transition-transform duration-500">
-                        <div class="absolute top-4 right-4 bg-black/60 backdrop-blur-md px-3 py-1 rounded-full text-xs font-bold border border-white/10">
-                            ⭐ {{ item.favs }} Likes
+                <div class="glass rounded-[3.5rem] overflow-hidden flex flex-col relative transition-all hover:-translate-y-4 {{ 'steal-glow' if item.analysis.is_steal else '' }}">
+                    <div class="relative h-96 group">
+                        <img src="{{ item.photo }}" class="w-full h-full object-cover group-hover:scale-110 transition-transform duration-[1.5s]">
+                        <div class="absolute inset-0 bg-gradient-to-t from-[#030303] via-transparent to-transparent opacity-80"></div>
+                        
+                        <div class="absolute top-8 left-8 flex flex-col gap-3">
+                            <span class="market-badge">{{ item.market_name }}</span>
+                            {% if item.analysis.is_steal %}
+                            <span class="bg-[#00ff41] text-black px-5 py-2 rounded-2xl text-[10px] font-black uppercase tracking-tighter">Profit Opportunity</span>
+                            {% endif %}
+                            <span class="hype-badge text-white px-5 py-2 rounded-2xl text-[10px] font-black uppercase tracking-tighter">Hype Score: {{ item.analysis.hype_score }}</span>
                         </div>
-                        {% if item.analysis.is_steal %}
-                        <div class="absolute bottom-4 left-4 bg-green-500 text-black px-4 py-1 rounded-lg text-[10px] font-black uppercase tracking-tighter">
-                            High Profit Potential
-                        </div>
-                        {% endif %}
                     </div>
                     
-                    <div class="p-6 flex-grow flex flex-col justify-between">
-                        <div>
-                            <p class="text-[10px] font-black text-green-500 uppercase tracking-widest mb-1">{{ item.brand }}</p>
-                            <h3 class="font-bold text-lg leading-tight mb-4 truncate">{{ item.title }}</h3>
-                            
-                            <div class="flex justify-between items-baseline mb-6">
-                                <div>
-                                    <p class="text-3xl font-black text-white">{{ item.price }}€</p>
-                                    <p class="text-[10px] text-zinc-500 font-bold uppercase">Markt: {{ item.analysis.avg_market_price }}€</p>
-                                </div>
-                                <div class="text-right">
-                                    <p class="text-[10px] text-zinc-500 font-bold uppercase">Hype Score</p>
-                                    <p class="text-xl font-black text-white">{{ item.analysis.hype_score }}</p>
-                                </div>
+                    <div class="p-10 flex-grow">
+                        <div class="mb-8">
+                            <p class="text-zinc-500 text-[10px] font-black uppercase tracking-[0.2em] mb-2">{{ item.brand }}</p>
+                            <h3 class="text-2xl font-bold leading-tight h-16 line-clamp-2 tracking-tight">{{ item.title }}</h3>
+                        </div>
+
+                        <div class="flex justify-between items-end mb-10">
+                            <div>
+                                <p class="text-5xl font-black text-white italic tracking-tighter">{{ item.price }}€</p>
+                                <p class="text-zinc-600 text-[10px] font-bold mt-2 uppercase">Mkt Benchmark: {{ item.analysis.mkt_avg }}€</p>
+                            </div>
+                            <div class="text-right">
+                                <p class="text-[#00ff41] font-black text-2xl tracking-tighter">+{{ item.analysis.est_profit }}€</p>
+                                <p class="text-zinc-600 text-[10px] font-bold uppercase mt-1">Est. Marge</p>
                             </div>
                         </div>
 
-                        <a href="{{ item.url }}" target="_blank" class="w-full bg-white text-black py-4 rounded-2xl font-black text-center hover:bg-green-500 transition-colors uppercase text-sm tracking-tighter">
-                            Artikel Snipen
+                        <a href="{{ item.url }}" target="_blank" 
+                           class="block w-full bg-white text-black py-6 rounded-[2rem] text-center font-black hover:bg-[#00ff41] transition-all uppercase tracking-tighter text-sm">
+                            Access Inventory
                         </a>
                     </div>
                 </div>
                 {% endfor %}
             </div>
         </div>
-        
-        <script>
-            // Auto-Refresh Logik für Live-Scraping
-            setTimeout(() => {
-                if(!document.activeElement.tagName === 'INPUT') {
-                    // window.location.reload();
-                }
-            }, 60000);
-        </script>
     </body>
     </html>
-    """, items=results, query=query)
+    """, items=final_items, query=query)
 
 if __name__ == "__main__":
     app.run(debug=True)
