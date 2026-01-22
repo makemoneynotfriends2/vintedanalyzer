@@ -1,5 +1,0 @@
-{
-  "buildCommand": "echo 'No build needed'",
-  "outputDirectory": ".",
-  "devCommand": "python -m http.server 3000"
-}
