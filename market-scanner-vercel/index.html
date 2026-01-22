@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Market Scanner Pro</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0a0e14; color: #e6edf3; font-size: 14px; }
+        .container { max-width: 1600px; margin: 0 auto; padding: 20px; }
+        
+        /* Start Screen */
+        .start-screen { text-align: center; padding: 100px 20px; }
+        .start-screen h1 { font-size: 42px; font-weight: 700; margin-bottom: 16px; background: linear-gradient(135deg, #3fb950 0%, #58a6ff 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        .start-screen p { color: #8b949e; font-size: 16px; margin-bottom: 32px; }
+        .scan-btn { background: linear-gradient(135deg, #3fb950 0%, #2ea043 100%); border: none; color: white; padding: 18px 52px; font-size: 17px; font-weight: 600; border-radius: 10px; cursor: pointer; box-shadow: 0 4px 12px rgba(63, 185, 80, 0.3); transition: all 0.3s; }
+        .scan-btn:hover { transform: translateY(-2px); box-shadow: 0 6px 16px rgba(63, 185, 80, 0.4); }
+        
+        /* Scanning */
+        .scanning { display: none; text-align: center; padding: 80px 20px; }
+        .scanning.active { display: block; }
+        .spinner { width: 60px; height: 60px; margin: 0 auto 20px; border: 4px solid #252a33; border-top-color: #3fb950; border-radius: 50%; animation: spin 1s linear infinite; }
+        @keyframes spin { to { transform: rotate(360deg); }}
+        .scan-status { font-size: 15px; color: #8b949e; margin-bottom: 16px; }
+        .scan-log { max-width: 500px; margin: 0 auto; background: #13171d; border: 1px solid #252a33; padding: 12px; border-radius: 6px; font-size: 12px; font-family: 'SF Mono', monospace; text-align: left; max-height: 150px; overflow-y: auto; }
+        
+        /* Results */
+        .results { display: none; }
+        .results.active { display: block; }
+        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 28px; padding-bottom: 16px; border-bottom: 1px solid #252a33; }
+        .header h2 { font-size: 28px; font-weight: 700; }
+        .timestamp { font-size: 13px; color: #8b949e; margin-top: 4px; }
+        .back-btn { background: #13171d; border: 1px solid #252a33; color: #8b949e; padding: 10px 20px; font-size: 14px; border-radius: 6px; cursor: pointer; transition: all 0.2s; }
+        .back-btn:hover { border-color: #3fb950; color: #3fb950; }
+        
+        /* Brands */
+        .section-title { font-size: 18px; font-weight: 600; margin-bottom: 16px; color: #e6edf3; }
+        .brands-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; margin-bottom: 28px; }
+        .brand-card { background: #13171d; border: 1px solid #252a33; padding: 18px; border-radius: 8px; cursor: pointer; transition: all 0.2s; }
+        .brand-card:hover { border-color: #3fb950; background: #1a1f26; transform: translateY(-1px); }
+        .brand-card.active { border-color: #3fb950; background: rgba(63, 185, 80, 0.08); }
+        .brand-name { font-size: 17px; font-weight: 600; margin-bottom: 6px; }
+        .brand-stats { font-size: 13px; color: #8b949e; margin-bottom: 8px; }
+        .brand-profit { font-size: 15px; color: #3fb950; font-weight: 700; }
+        
+        /* Categories */
+        .categories-section { display: none; margin-bottom: 28px; }
+        .categories-section.active { display: block; }
+        .categories-list { display: flex; gap: 10px; flex-wrap: wrap; }
+        .category-btn { background: #13171d; border: 1px solid #252a33; color: #8b949e; padding: 10px 18px; font-size: 14px; border-radius: 6px; cursor: pointer; transition: all 0.2s; }
+        .category-btn:hover { border-color: #58a6ff; color: #58a6ff; }
+        .category-btn.active { background: #3fb950; border-color: #3fb950; color: white; }
+        
+        /* Products */
+        .products-section { display: none; }
+        .products-section.active { display: block; }
+        .table-header { display: grid; grid-template-columns: 55px 2.5fr 130px 110px 110px 130px 110px 90px; gap: 14px; padding: 12px 14px; background: #13171d; border: 1px solid #252a33; border-radius: 8px 8px 0 0; font-size: 11px; color: #8b949e; text-transform: uppercase; font-weight: 700; letter-spacing: 0.5px; }
+        .products-list { background: #13171d; border: 1px solid #252a33; border-top: none; border-radius: 0 0 8px 8px; }
+        .product-row { display: grid; grid-template-columns: 55px 2.5fr 130px 110px 110px 130px 110px 90px; gap: 14px; padding: 12px 14px; border-bottom: 1px solid #252a33; align-items: center; font-size: 14px; cursor: pointer; transition: background 0.15s; }
+        .product-row:hover { background: #1a1f26; }
+        .product-row:last-child { border-bottom: none; }
+        .product-img { width: 45px; height: 45px; border-radius: 6px; border: 1px solid #252a33; object-fit: cover; background: #1a1f26; }
+        .product-title { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .text-right { text-align: right; }
+        .text-center { text-align: center; }
+        .price-current { color: #3fb950; font-weight: 700; font-size: 15px; }
+        .price-avg { color: #8b949e; font-weight: 600; }
+        .profit-potential { color: #f0883e; font-weight: 700; font-size: 16px; }
+        .margin { font-weight: 700; font-size: 15px; }
+        .margin-high { color: #3fb950; }
+        .margin-medium { color: #f0883e; }
+        .platform-badge { font-size: 12px; color: #8b949e; }
+        
+        @media (max-width: 1200px) {
+            .table-header, .product-row { grid-template-columns: 45px 2fr 100px 90px 90px 100px 90px 70px; font-size: 13px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- START SCREEN -->
+        <div class="start-screen" id="startScreen">
+            <h1>🎯 Market Scanner Pro</h1>
+            <p>Analysiere Vinted & eBay Märkte für profitable Streetwear & Vintage Deals</p>
+            <button class="scan-btn" onclick="startScan()">Check Markets</button>
+        </div>
+
+        <!-- SCANNING -->
+        <div class="scanning" id="scanning">
+            <div class="spinner"></div>
+            <div class="scan-status" id="scanStatus">Initialisiere Scanner...</div>
+            <div class="scan-log" id="scanLog"></div>
+        </div>
+
+        <!-- RESULTS -->
+        <div class="results" id="results">
+            <div class="header">
+                <div>
+                    <h2>Marktanalyse</h2>
+                    <div class="timestamp" id="timestamp"></div>
+                </div>
+                <button class="back-btn" onclick="reset()">← Neue Analyse</button>
+            </div>
+
+            <!-- BRANDS -->
+            <div>
+                <div class="section-title">📊 Trending Brands (nach Profit sortiert)</div>
+                <div class="brands-grid" id="brandsGrid"></div>
+            </div>
+
+            <!-- CATEGORIES -->
+            <div class="categories-section" id="categoriesSection">
+                <div class="section-title" id="categoryTitle">Kategorien wählen:</div>
+                <div class="categories-list" id="categoriesList"></div>
+            </div>
+
+            <!-- PRODUCTS -->
+            <div class="products-section" id="productsSection">
+                <div class="section-title" id="productsTitle">Produkte:</div>
+                <div class="table-header">
+                    <div></div>
+                    <div>PRODUKT</div>
+                    <div>PLATFORM</div>
+                    <div class="text-right">AKTUELL</div>
+                    <div class="text-right">Ø MARKT</div>
+                    <div class="text-right">PROFIT</div>
+                    <div class="text-right">MARGE</div>
+                    <div class="text-center">VERKAUFT</div>
+                </div>
+                <div class="products-list" id="productsList"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // API URL - automatically uses same domain
+        const API_URL = window.location.origin;
+        
+        let currentBrand = null;
+        let currentCategory = null;
+        let marketData = null;
+
+        async function startScan() {
+            document.getElementById('startScreen').style.display = 'none';
+            document.getElementById('scanning').classList.add('active');
+            
+            addLog('Verbinde mit Backend...');
+            addLog('API: ' + API_URL + '/api/scan');
+            
+            try {
+                const response = await fetch(`${API_URL}/api/scan`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    marketData = result.data;
+                    addLog('✅ Marktdaten geladen!');
+                    addLog(`${result.data.total_items} Items analysiert`);
+                    setTimeout(showResults, 1000);
+                } else {
+                    throw new Error(result.error || 'Unbekannter Fehler');
+                }
+                
+            } catch (error) {
+                console.error('Error:', error);
+                addLog('❌ Fehler: ' + error.message);
+                setTimeout(() => {
+                    alert('Fehler beim Laden der Daten. Bitte versuche es erneut.');
+                    reset();
+                }, 2000);
+            }
+        }
+
+        function addLog(msg) {
+            const line = document.createElement('div');
+            line.style.padding = '4px 0';
+            line.style.color = msg.includes('✅') ? '#3fb950' : '#8b949e';
+            line.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+            document.getElementById('scanLog').appendChild(line);
+            document.getElementById('scanLog').scrollTop = document.getElementById('scanLog').scrollHeight;
+        }
+
+        function showResults() {
+            document.getElementById('scanning').classList.remove('active');
+            document.getElementById('results').classList.add('active');
+            document.getElementById('timestamp').textContent = `Gescannt: ${new Date().toLocaleString('de-DE')}`;
+            renderBrands();
+        }
+
+        function renderBrands() {
+            const html = marketData.brands.map(brand => `
+                <div class="brand-card" onclick="selectBrand('${brand.name}')">
+                    <div class="brand-name">${brand.name}</div>
+                    <div class="brand-stats">${brand.items} Items gefunden</div>
+                    <div class="brand-profit">Ø ${brand.avgProfit}€ Profit/Item</div>
+                </div>
+            `).join('');
+            document.getElementById('brandsGrid').innerHTML = html;
+        }
+
+        function selectBrand(brandName) {
+            currentBrand = brandName;
+            currentCategory = null;
+            
+            const brand = marketData.brands.find(b => b.name === brandName);
+            
+            // Update active state
+            document.querySelectorAll('.brand-card').forEach(el => el.classList.remove('active'));
+            event.currentTarget.classList.add('active');
+            
+            // Show categories
+            document.getElementById('categoriesSection').classList.add('active');
+            document.getElementById('categoryTitle').textContent = `${brandName} - Kategorien:`;
+            
+            const categoriesHtml = Object.keys(brand.categories).map(cat => `
+                <button class="category-btn" onclick="selectCategory('${cat}')">${cat} (${brand.categories[cat].length})</button>
+            `).join('');
+            
+            document.getElementById('categoriesList').innerHTML = categoriesHtml;
+            document.getElementById('productsSection').classList.remove('active');
+        }
+
+        function selectCategory(categoryName) {
+            currentCategory = categoryName;
+            
+            const brand = marketData.brands.find(b => b.name === currentBrand);
+            const products = brand.categories[categoryName];
+            
+            // Update active state
+            document.querySelectorAll('.category-btn').forEach(el => el.classList.remove('active'));
+            event.currentTarget.classList.add('active');
+            
+            // Show products
+            document.getElementById('productsSection').classList.add('active');
+            document.getElementById('productsTitle').textContent = `${currentBrand} - ${categoryName}:`;
+            
+            const productsHtml = products.map(p => {
+                const profit = (p.avg || 0) - p.price;
+                const margin = p.price > 0 ? ((profit / p.price) * 100).toFixed(0) : 0;
+                const marginClass = margin >= 80 ? 'margin-high' : 'margin-medium';
+                
+                return `
+                    <div class="product-row">
+                        <img src="${p.image || 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2245%22 height=%2245%22%3E%3Crect fill=%22%231a1f26%22 width=%2245%22 height=%2245%22/%3E%3C/svg%3E'}" class="product-img">
+                        <div class="product-title">${p.title}</div>
+                        <div class="platform-badge">${p.platform}</div>
+                        <div class="text-right price-current">${p.price}€</div>
+                        <div class="text-right price-avg">${p.avg || 0}€</div>
+                        <div class="text-right profit-potential">+${profit.toFixed(0)}€</div>
+                        <div class="text-right margin ${marginClass}">${margin}%</div>
+                        <div class="text-center" style="color: #8b949e;">${p.sold || 0}</div>
+                    </div>
+                `;
+            }).join('');
+            
+            document.getElementById('productsList').innerHTML = productsHtml;
+        }
+
+        function reset() {
+            document.getElementById('results').classList.remove('active');
+            document.getElementById('startScreen').style.display = 'block';
+            document.getElementById('scanLog').innerHTML = '';
+            document.getElementById('categoriesSection').classList.remove('active');
+            document.getElementById('productsSection').classList.remove('active');
+            currentBrand = null;
+            currentCategory = null;
+        }
+    </script>
+</body>
+</html>
