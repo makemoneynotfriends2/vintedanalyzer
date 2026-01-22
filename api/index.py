@@ -1,48 +1,61 @@
-from flask import Flask, jsonify
+from flask import Flask
 import requests
 import random
 
 app = Flask(__name__)
 
-# Deine Target-Liste (genau wie du sie wolltest)
+# Deine Target-Marken für 2026
 TARGETS = [
-    {"brand": "Ralph Lauren", "sub": "Vintage"},
-    {"brand": "Lacoste", "sub": "Tracksuit"},
-    {"brand": "True Religion", "sub": "Jeans"},
-    {"brand": "Football", "sub": "Tracksuit"},
-    {"brand": "Gucci", "sub": "Vintage"},
-    {"brand": "Armani", "sub": "Vintage"},
-    {"brand": "Dolce & Gabbana", "sub": "Vintage"}
+    {"brand": "Ralph Lauren", "q": "Ralph Lauren Vintage"},
+    {"brand": "Lacoste", "q": "Lacoste Tracksuit"},
+    {"brand": "True Religion", "q": "True Religion Jeans"},
+    {"brand": "Football", "q": "Football Tracksuit Vintage"},
+    {"brand": "Gucci", "q": "Gucci Vintage"}
 ]
 
-def get_vinted_data(query):
+def fetch_vinted(query):
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/110.0.0.0'}
-    session = requests.Session()
-    session.get("https://www.vinted.de", headers=headers) # Cookies holen
-    
-    url = f"https://www.vinted.de/api/v2/catalog/items?search_text={query}&order=newest_first&per_page=10"
+    s = requests.Session()
     try:
-        r = session.get(url, headers=headers)
-        return r.json().get('items', [])
+        s.get("https://www.vinted.de", headers=headers, timeout=5)
+        r = s.get(f"https://www.vinted.de/api/v2/catalog/items?search_text={query}&order=newest_first", headers=headers, timeout=5)
+        return r.json().get('items', [])[:10]
     except:
         return []
 
 @app.route('/')
-def home():
-    # Sucht bei jedem Refresh der Seite nach einem zufälligen Trend-Thema deiner Liste
-    target = random.choice(TARGETS)
-    query = f"{target['brand']} {target['sub']}"
-    items = get_vinted_data(query)
+def index():
+    t = random.choice(TARGETS)
+    items = fetch_vinted(t['q'])
     
-    # Erstellt eine einfache Liste für den Browser
-    html = f"<h1>Trend-Analyse für: {query}</h1><ul>"
-    for item in items:
-        price = item.get('price', {}).get('amount')
-        url = f"https://www.vinted.de{item.get('url')}"
-        html += f"<li><b>{item.get('title')}</b> - {price}€ <br> <a href='{url}' target='_blank'>Link zum Deal</a></li><br>"
-    html += "</ul>"
-    return html
+    # Hier bauen wir das Design direkt im Python-Code
+    items_html = ""
+    for i in items:
+        price = i.get('price', {}).get('amount', '??')
+        url = f"https://www.vinted.de{i.get('url')}"
+        img = i.get('photos', [{}])[0].get('url', '')
+        items_html += f"""
+        <div style="border:1px solid #ddd; padding:10px; margin:10px; border-radius:8px; display:flex; align-items:center;">
+            <img src="{img}" style="width:80px; height:80px; object-fit:cover; margin-right:15px; border-radius:5px;">
+            <div>
+                <h3 style="margin:0;">{i.get('title')}</h3>
+                <p style="color:green; font-weight:bold; font-size:1.2em;">{price} €</p>
+                <a href="{url}" target="_blank" style="background:black; color:white; padding:5px 10px; text-decoration:none; border-radius:3px;">Zum Artikel</a>
+            </div>
+        </div>"""
 
-# Wichtig für Vercel/Deployment
+    return f"""
+    <html>
+        <head><title>Vinted Analyzer Pro</title></head>
+        <body style="font-family:sans-serif; max-width:600px; margin:auto; padding:20px;">
+            <h1>Vinted Scanner: {t['brand']}</h1>
+            <p>Suche nach: <b>{t['q']}</b></p>
+            <hr>
+            {items_html if items_html else "<p>Keine Artikel gefunden oder Bot-Sperre.</p>"}
+            <script>setTimeout(() => location.reload(), 60000);</script>
+        </body>
+    </html>
+    """
+
 if __name__ == "__main__":
     app.run()
